@@ -1,5 +1,6 @@
 import express from 'express';
 import dotenv from "dotenv";
+import cors from "cors";
 import connextDB from "./database/connect.js";
 import adminRouter from "./routes/admin.routes.js";
 import productRouter from "./routes/product.routes.js";
@@ -12,8 +13,9 @@ const PORT = process.env.PORT || 3000;
 connextDB();
 
 //Middlewares
+app.use(cors({ origin: 'http://localhost:3000' }));
 app.use(express.json());
-app.use(express.urlencoded({extended: true}));
+app.use(express.urlencoded({ extended: true }));
 
 //Routes
 app.use("/admin/products", adminRouter);
