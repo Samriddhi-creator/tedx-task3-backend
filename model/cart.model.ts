@@ -9,6 +9,11 @@ export const CartItemSchema=new Schema(
       required:true,
     },
 
+    productName: {
+      type: String,
+      required: true,
+    },
+
     quantity: {
       type:Number,
       required:true,
@@ -35,13 +40,32 @@ export const CartItemSchema=new Schema(
   }
 );
 
+const UserDetailsSchema = new Schema({
+  fullName: { type: String, required: true },
+  email: { type: String, required: true },
+  phone: { type: String, required: true },
+}, { _id: false });
+
+const DeliveryDetailsSchema = new Schema({
+  type: { type: String, enum: ["in-campus", "out-of-campus"], required: true },
+  hostel: { type: String },
+  roomNumber: { type: String },
+  notes: { type: String },
+  addressLine: { type: String },
+  city: { type: String },
+  state: { type: String },
+  postalCode: { type: String },
+}, { _id: false });
+
 const CartSchema = new Schema<ICart>(
   {
     userId: {
       type:Schema.Types.ObjectId,
       required:true,
-      unique:true,
-      index:true,
+    },
+
+    customerName: {
+      type: String,
     },
 
     items: {
@@ -64,11 +88,23 @@ const CartSchema = new Schema<ICart>(
       enum:["ORDERED","PENDING"],
       default:"PENDING",
     },
+
+    userDetails: {
+      type: UserDetailsSchema,
+    },
+
+    deliveryDetails: {
+      type: DeliveryDetailsSchema,
+    },
   },
   {
     timestamps:true,
   }
 );
 
+CartSchema.index(
+  { userId: 1 },
+  { unique: true, partialFilterExpression: { status: "PENDING" } }
+);
 
 export const CartModel=model<ICart>("Cart",CartSchema);

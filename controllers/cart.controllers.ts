@@ -16,19 +16,10 @@ export async function getCartHandler(
   }
 
   try {
-    const cart = await CartModel.findOne({ userId: oid });
+    const cart = await CartModel.findOne({ userId: oid, status: "PENDING" });
 
     if (!cart) {
       return sendError(res, 404, "Cart not found");
-    }
-
-    if (cart.status !== "PENDING") {
-      await CartModel.deleteOne({ userId: oid });
-      return res.status(409).json({
-        success: false,
-        message: "Cart is not pending and was removed",
-        data: null,
-      });
     }
 
     if (cart.items.length > 0) {
@@ -77,14 +68,18 @@ export async function addItemHandler(
   }
 
   try {
-    if (body.productType === "MERCH") {
-      if (!body.selectedSize) {
-        return sendError(res, 400, "Missing size for merch product");
-      }
-    }
     const product = await ProductModel.findOne({ slug: body.productId });
     if (!product) {
       return sendError(res, 404, "Product not found");
+    }
+
+    if (product.type === "MERCH" && product.sizes && product.sizes.length > 0) {
+      if (!body.selectedSize) {
+        return sendError(res, 400, "Missing size for merch product");
+      }
+      if (!product.sizes.includes(body.selectedSize)) {
+        return sendError(res, 400, "Invalid size selected");
+      }
     }
 
     const quantity = Number(body.quantity);
@@ -92,28 +87,35 @@ export async function addItemHandler(
       return sendError(res, 400, "Invalid quantity");
     }
 
-    if (product.stock < quantity && !product.isUnlimitedStock) {
-      return sendError(res, 400, "Product out of stock");
+    const oid = parseObjectId(body.userId);
+    if (!oid) {
+      return sendError(res, 400, "Invalid User ID");
+    }
+
+    const cart = await CartModel.findOne({ userId: oid, status: "PENDING" });
+    const existingItem = cart ? cart.items.find((item) =>
+      item.productId.equals(product._id) &&
+      (item.selectedSize === body.selectedSize || (!item.selectedSize && !body.selectedSize))
+    ) : null;
+
+    const cumulativeQty = (existingItem?.quantity || 0) + quantity;
+    if (product.stock < cumulativeQty && !product.isUnlimitedStock) {
+      return sendError(res, 400, "Exceeds available stock");
     }
 
     const cartItem = {
       productId: product._id,
+      productName: product.name,
       quantity,
       productType: product.type,
       priceAtPurchase: product.price,
       selectedSize: body.selectedSize,
     };
 
-    const oid = parseObjectId(body.userId);
-    if (!oid) {
-      return sendError(res, 400, "Invalid User ID");
-    }
-
-    const cart = await CartModel.findOne({ userId: oid });
-
     if (!cart) {
       const newCart = await CartModel.create({
         userId: oid,
+        customerName: body.customerName,
         items: [cartItem],
         subtotal: product.price * quantity,
         total: product.price * quantity,
@@ -122,7 +124,12 @@ export async function addItemHandler(
       return sendSuccess(res, 201, "Cart created successfully", newCart);
     }
 
-    cart.items.push(cartItem);
+    if (existingItem) {
+      existingItem.quantity += quantity;
+    } else {
+      cart.items.push(cartItem);
+    }
+
     cart.subtotal += product.price * quantity;
     cart.total += product.price * quantity;
 
@@ -153,6 +160,7 @@ export async function updateItemHandler(
   try {
     const cart = await CartModel.findOne({
       userId: oid,
+      status: "PENDING",
     });
     if (!cart)
       return sendError(res, 404, "Cart not found for user");
@@ -166,8 +174,13 @@ export async function updateItemHandler(
       return sendError(res, 400, "Invalid quantity");
     }
 
+    if (prod.stock < qty && !prod.isUnlimitedStock) {
+      return sendError(res, 400, "Exceeds available stock");
+    }
+
     const targetItem = cart.items.find((item) =>
-      item.productId.equals(prod._id),
+      item.productId.equals(prod._id) &&
+      (item.selectedSize === body.selectedSize || (!item.selectedSize && !body.selectedSize))
     );
     if (!targetItem) {
       return sendError(res, 404, "Item not found in cart");
@@ -206,7 +219,7 @@ export async function clearCartHandler(
   }
 
   try {
-    const result = await CartModel.deleteOne({ userId: oid });
+    const result = await CartModel.deleteOne({ userId: oid, status: "PENDING" });
     return sendSuccess(res, 200, "Cart cleared successfully", {
       deletedCount: result.deletedCount,
     });
@@ -225,6 +238,7 @@ export async function removeItemHandler(
   try {
     const productId = req.params.productId;
     const userId = req.body.userId;
+    const selectedSize = req.body.selectedSize;
 
     if (!userId) {
       return sendError(res, 400, "No User ID given");
@@ -238,13 +252,15 @@ export async function removeItemHandler(
       return sendError(res, 400, "Invalid User ID");
     }
 
-    const cart = await CartModel.findOne({ userId: oid });
+    const cart = await CartModel.findOne({ userId: oid, status: "PENDING" });
     if (!cart) return sendError(res, 404, "Cart not found for user");
 
     const prod = await ProductModel.findOne({ slug: productId });
     if (!prod) return sendError(res, 404, "Product not available");
 
-    const newItems = cart.items.filter((item) => !item.productId.equals(prod._id));
+    const newItems = cart.items.filter((item) =>
+      !(item.productId.equals(prod._id) && (item.selectedSize === selectedSize || (!item.selectedSize && !selectedSize)))
+    );
 
     cart.items = newItems;
     cart.subtotal = cart.items.reduce(
@@ -260,5 +276,46 @@ export async function removeItemHandler(
       return sendError(res, 500, err.message);
     }
     return sendError(res, 500, "Unknown Deletion Error");
+  }
+}
+
+export async function checkoutHandler(
+  req: express.Request,
+  res: express.Response,
+) {
+  const { userId, userDetails, deliveryDetails } = req.body;
+  if (!userId || !userDetails || !deliveryDetails) {
+    return sendError(res, 400, "Missing required parameters for checkout");
+  }
+
+  const oid = parseObjectId(userId);
+  if (!oid) {
+    return sendError(res, 400, "Invalid User ID");
+  }
+
+  try {
+    const cart = await CartModel.findOne({ userId: oid, status: "PENDING" });
+    if (!cart) {
+      return sendError(res, 404, "No active cart found for this user");
+    }
+
+    if (cart.items.length === 0) {
+      return sendError(res, 400, "Cart is empty");
+    }
+
+    // Update cart to ORDERED and save details
+    cart.status = "ORDERED";
+    cart.customerName = userDetails.fullName;
+    cart.userDetails = userDetails;
+    cart.deliveryDetails = deliveryDetails;
+
+    await cart.save();
+
+    return sendSuccess(res, 200, "Checkout completed successfully", cart);
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      return sendError(res, 500, err.message);
+    }
+    return sendError(res, 500, "Unknown Error during checkout");
   }
 }

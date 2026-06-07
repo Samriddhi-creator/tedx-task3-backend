@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "nodemon --watch . --ext ts,json --ignore dist --exec tsx index.ts",
     "build": "tsc",
-    "start": "nodemon dist/index.js"
+    "start": "nodemon dist/index.js",
+    "db:seed": "tsx scripts/seed.ts"
   },
   "author": "Devaansh",
   "license": "ISC",
